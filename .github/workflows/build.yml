@@ -17,6 +17,10 @@ on:
 env:
   BUILD_TYPE: Release
 
+# 创建 Release 需要 contents: write 权限（GITHUB_TOKEN 默认只读）
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
