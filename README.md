@@ -26,7 +26,7 @@
 
 | 项目 | 数值 |
 |------|------|
-| Release exe 体积 | 1.015 MiB |
+| Release exe 体积 | MinGW 约 1.04 MiB；MSVC（CI 默认）约 304 KiB |
 | 工作集 | 11.49–11.53 MiB |
 | 私有字节 | 1.61–1.80 MiB |
 | CPU 占用 | 两次 30 秒测试约 0.05–0.36% 单核等效；20 逻辑处理器总占用约 0.003–0.018% |
@@ -69,6 +69,19 @@ cmake --build build --config Release
 ```bash
 msbuild MiniMonitor.sln /p:Configuration=Release /p:Platform=x64
 ```
+
+---
+
+## 下载预编译版（无需编译）
+
+不想自己编译？直接去 [Releases 页面](https://github.com/whom22/MiniMonitor/releases) 下载最新的 `MiniMonitor-vX.Y-win64.zip`，解压后双击 `MiniMonitor.exe` 即可运行。
+
+- 下载后建议用 PowerShell 核对完整性：
+  ```powershell
+  Get-FileHash MiniMonitor.exe -Algorithm SHA256
+  # 与同 Release 提供的 .sha256 文件比对
+  ```
+- Release 由 GitHub Actions 用 MSVC 自动编译，单文件无依赖，体积约 300 KB。
 
 ---
 
