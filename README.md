@@ -1,5 +1,9 @@
 # MiniMonitor — 轻量任务栏监控器
 
+![License](https://img.shields.io/badge/license-GPL--3.0-blue.svg)
+![Language](https://img.shields.io/badge/language-C%2B%2B17-00599C.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6.svg)
+
 仿照 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) 的思路，从零用 **纯 C++ Win32 API** 写的轻量监控程序。在任务栏实时显示 **上传/下载速率、CPU、内存** 四项指标。
 
 > 目标：**内存和存储占用尽可能小，不影响电脑运行**。
@@ -192,4 +196,10 @@ MiniMonitor/
 
 ## 许可
 
-参考 TrafficMonitor（GPLv3）思路自研。可自由使用、修改。
+本项目基于 [GPL-3.0](LICENSE) 协议开源。
+
+- 你可以自由使用、修改、分发本程序
+- 任何基于本程序的衍生作品必须同样以 GPL-3.0 开源
+- 详见 [LICENSE](LICENSE) 全文
+
+本项目仿照 [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor)（GPLv3）的思路从零实现。
