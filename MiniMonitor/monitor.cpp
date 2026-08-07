@@ -1,12 +1,13 @@
 // monitor.cpp — 数据采集实现
 #include "monitor.h"
 // —— IP Helper / 网络统计相关头文件 ——
-// 注意包含顺序：netioapi.h 内部使用 NTSTATUS 等类型，但 MSVC 的 <windows.h>
-// 默认不引入 NTSTATUS（MinGW 头文件会顺带定义，所以之前没暴露）。这里先
-// 包含 <ntdef.h> 提供 NTSTATUS，确保 MSVC 与 MinGW 都能编译。
+// 注意包含顺序：netioapi.h 内部使用 NTSTATUS 类型，但 MSVC 的 <windows.h>
+// 默认不引入 NTSTATUS（MinGW 头文件会顺带定义，所以此前未暴露）。
+// <winternl.h> 是引入 NTSTATUS 的正规用户态头文件，且不会与 <windows.h>
+// 产生类型重定义冲突（<ntdef.h> 会，故不用）。
 #include <winsock2.h>
 #include <ws2ipdef.h>
-#include <ntdef.h>
+#include <winternl.h>
 #include <netioapi.h>
 #include <iphlpapi.h>
 #include <sstream>
