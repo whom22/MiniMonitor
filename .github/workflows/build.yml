@@ -1,0 +1,88 @@
+# GitHub Actions: 用 MSVC 编译 MiniMonitor，打 tag 时自动发布 Release
+#
+# 触发方式：
+#   1. 推送 v* 格式的 tag（如 v1.1）→ 编译 + 自动创建 Release 并上传 exe
+#   2. 手动触发（workflow_dispatch）→ 只编译验证，不上传
+#   3. push 到 main → 只编译验证（保证改动不破坏构建）
+name: Build
+
+on:
+  push:
+    tags:
+      - 'v*'          # 打版本 tag 时触发发版
+    branches:
+      - main          # 主分支改动做构建验证
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    # MSVC 工具链由 windows-latest runner 自带，无需额外安装
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure CMake
+        # 用 VS 生成器（而非 Ninja），让 MSVC 工具链自动就绪。
+        # CMakeLists 已配置静态链接 CRT（/MT），产物是单 exe 无依赖。
+        run: cmake -B build -S . -A x64 -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Locate exe
+        # 找到编译产物路径，验证存在，记录到 GITHUB_ENV 供后续步骤使用
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -Filter MiniMonitor.exe | Select-Object -First 1
+          if (-not $exe) { throw "MiniMonitor.exe not found in build output" }
+          $dest = "MiniMonitor.exe"
+          Copy-Item $exe.FullName $dest -Force
+          $size = (Get-Item $dest).Length
+          Write-Host "Built: $dest ($size bytes)"
+
+      - name: Generate SHA256
+        # 生成校验文件，与 exe 一并上传
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash MiniMonitor.exe -Algorithm SHA256).Hash
+          "$hash *MiniMonitor.exe" | Out-File -FilePath MiniMonitor.exe.sha256 -Encoding ascii -NoNewline
+          Write-Host "SHA256: $hash"
+
+      # —— 以下仅打 tag 时执行（发版）——
+      - name: Package for release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ver = $env:GITHUB_REF_NAME   # 如 v1.1
+          # 打包成 zip，命名与手发版本一致的风格
+          Compress-Archive -Path MiniMonitor.exe,MiniMonitor.exe.sha256 -DestinationPath "MiniMonitor-${ver}-win64.zip" -Force
+          Write-Host "Packaged MiniMonitor-${ver}-win64.zip"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: MiniMonitor ${{ github.ref_name }}
+          generate_release_notes: true   # 自动生成基于 commit 的 changelog
+          files: |
+            MiniMonitor-${{ github.ref_name }}-win64.zip
+            MiniMonitor.exe
+            MiniMonitor.exe.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # —— 非发版时：把 exe 作为 workflow artifact 上传，便于下载验证 ——
+      - name: Upload build artifact
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MiniMonitor-win64-exe
+          path: |
+            MiniMonitor.exe
+            MiniMonitor.exe.sha256
+          retention-days: 14
