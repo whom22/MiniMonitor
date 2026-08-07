@@ -54,7 +54,10 @@ if(MSVC)
     target_compile_options(MiniMonitor PRIVATE /W3 /permissive-)
     target_link_options(MiniMonitor PRIVATE
         $<$<CONFIG:Release>:/OPT:REF>
-        $<$<CONFIG:Release>:/OPT:ICF>)
+        $<$<CONFIG:Release>:/OPT:ICF>
+        # manifest 已由 app.rc 的 RT_MANIFEST 提供，关闭链接器自动生成，
+        # 否则会出现 CVT1100 duplicate resource (type:MANIFEST, name:1)。
+        /MANIFEST:NO)
 elseif(MINGW)
     # main.cpp 使用 wWinMain；MinGW 需要显式选择 Unicode GUI 启动代码。
     # 把 MinGW 的 libgcc/libstdc++/winpthread 静态打进 exe，避免发布目录
