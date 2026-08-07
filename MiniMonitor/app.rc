@@ -1,0 +1,21 @@
+// app.rc — 资源文件
+//
+// 说明：
+//   - 图标 IDI_APP_ICON 引用 app.ico。如果你没有准备 app.ico，
+//     请把下面这行注释掉；程序会自动回退到系统默认图标（见 main.cpp）。
+//   - 清单 app.manifest 由 CREATEPROCESS_MANIFEST_RESOURCE_ID
+//     嵌入 exe，提供 DPI 感知与兼容性声明。
+#include "resource.h"
+#include <windows.h>
+
+// 应用图标（多分辨率）。若没有 app.ico，注释掉此行即可。
+// 建议准备一个 256x256 的 ico（含 16/32/48/256 多尺寸）。
+IDI_APP_ICON ICON "app.ico"
+
+// 嵌入清单（必须用 ID=1，即 CREATEPROCESS_MANIFEST_RESOURCE_ID）。
+// MinGW 的 GCC 启动代码会自动链接 default-manifest.o，若再嵌入一份会
+// 产生重复清单；MinGW 构建由 main.cpp 的运行时 DPI 设置兜底，VS 构建保留
+// 完整 app.manifest。
+#ifndef MINIMONITOR_MINGW
+1 RT_MANIFEST "app.manifest"
+#endif
