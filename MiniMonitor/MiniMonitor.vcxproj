@@ -64,6 +64,9 @@
       <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
       <DebugInformationFormat Condition="'$(Configuration)'=='Debug'">ProgramDatabase</DebugInformationFormat>
       <Optimization Condition="'$(Configuration)'=='Release'">MaxFull</Optimization>
+      <!-- 源文件是 UTF-8（含中文/Unicode 字面量），MSVC 默认按 ANSI(GBK)
+           解读会乱码；显式指定源字符集与执行字符集均为 UTF-8 -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

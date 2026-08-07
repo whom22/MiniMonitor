@@ -51,7 +51,12 @@ if(MSVC)
     set_property(TARGET MiniMonitor PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     # Release 优化体积
-    target_compile_options(MiniMonitor PRIVATE /W3 /permissive-)
+    # /utf-8：源文件含中文/Unicode 字面量（如 L"内存"、L"微软雅黑"），
+    # MSVC 默认按系统 ANSI 代码页（中文 Windows 为 GBK/936）解读源文件，
+    # 会把 UTF-8 源文件解码错误，导致运行时文字乱码。
+    # /utf-8 同时设定源字符集与执行字符集为 UTF-8，彻底解决此问题。
+    # （MinGW 默认即按 UTF-8 处理，无需此选项。）
+    target_compile_options(MiniMonitor PRIVATE /W3 /permissive- /utf-8)
     target_link_options(MiniMonitor PRIVATE
         $<$<CONFIG:Release>:/OPT:REF>
         $<$<CONFIG:Release>:/OPT:ICF>
