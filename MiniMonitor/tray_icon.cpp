@@ -111,7 +111,8 @@ bool TrayIcon::IsPointInMenu(POINT pt) const {
 
     wchar_t class_name[32] = {};
     return GetClassNameW(hit, class_name,
-                         static_cast<int>(_countof(class_name))) > 0
+                         static_cast<int>(sizeof(class_name) /
+                                          sizeof(class_name[0]))) > 0
         && wcscmp(class_name, L"#32768") == 0;
 }
 
