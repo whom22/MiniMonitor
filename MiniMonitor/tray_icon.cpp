@@ -54,23 +54,65 @@ UINT TrayIcon::PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_EXIT, L"退出\t");
 
-    // 托盘菜单的标准套路：必须 SetForegroundWindow，否则点外面不消失。
-    SetForegroundWindow(hwnd);
+    // TrackPopupMenu 要求 owner 真正成为前台窗口，否则菜单可能一直捕获在
+    // 当前应用上，点击其它窗口也不会消失。hidden_hwnd_ 平时不可见，因此在
+    // 菜单期间临时显示为 1x1 的屏幕外工具窗口，让 SetForegroundWindow 生效。
+    const bool owner_was_visible = IsWindowVisible(hwnd) != FALSE;
+    if (!owner_was_visible) {
+        SetWindowPos(hwnd, nullptr, -32000, -32000, 1, 1,
+                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    }
+    if (GetForegroundWindow() != hwnd) {
+        // Raw Input 是观察者路径，不一定会给本进程授予前台切换权。
+        // 只在菜单即将打开的这一瞬间授予前台权限，再立即切换 owner；
+        // 不改变其它窗口的输入传递。
+        AllowSetForegroundWindow(ASFW_ANY);
+        SetForegroundWindow(hwnd);
+    }
+    if (GetForegroundWindow() != hwnd) {
+        // 同线程回退；正常情况下前面的显示动作已足够。
+        SetActiveWindow(hwnd);
+    }
 
     // TrackPopupMenu 返回的是被选项 ID，取消返回 0。
     // TPM_RETURNCMD 让它返回命令 ID 而不是发 WM_COMMAND。
     // TPM_NONOTIFY 不发 WM_MENUCOMMAND。
     // 右对齐：让菜单不超出屏幕右边（托盘在右下角）。
-    UINT cmd = TrackPopupMenu(
+    menu_open_ = true;
+    UINT cmd = TrackPopupMenuEx(
         menu,
         TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN,
-        pt.x, pt.y, 0, hwnd, nullptr);
+        pt.x, pt.y, hwnd, nullptr);
+    menu_open_ = false;
 
     // 配合 SetForegroundWindow 的已知 bug：发一个空消息唤醒
     PostMessageW(hwnd, WM_NULL, 0, 0);
 
+    if (!owner_was_visible) {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+
     DestroyMenu(menu);
     return cmd;
+}
+
+void TrayIcon::CancelMenu() {
+    if (menu_open_) EndMenu();
+}
+
+bool TrayIcon::IsPointInMenu(POINT pt) const {
+    if (!menu_open_) return false;
+
+    // TrackPopupMenu 创建的标准菜单窗口类名固定为 #32768。
+    // WindowFromPoint 能同时覆盖主菜单和打开后的子菜单，避免误关菜单项点击。
+    HWND hit = WindowFromPoint(pt);
+    if (!hit) return false;
+
+    wchar_t class_name[32] = {};
+    return GetClassNameW(hit, class_name,
+                         static_cast<int>(_countof(class_name))) > 0
+        && wcscmp(class_name, L"#32768") == 0;
 }
 
 void TrayIcon::Remove() {

@@ -33,6 +33,11 @@ public:
     UINT PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
                    bool show_tray_icon);
 
+    // 菜单打开期间由 Raw Input 观察器调用；只结束菜单，不吞掉外部鼠标消息。
+    void CancelMenu();
+    bool IsMenuOpen() const { return menu_open_; }
+    bool IsPointInMenu(POINT pt) const;
+
     void Remove();
 
     bool IsAdded() const { return added_; }
@@ -40,6 +45,7 @@ public:
 private:
     NOTIFYICONDATAW nid_{};
     bool added_ = false;
+    bool menu_open_ = false;
 };
 
 } // namespace mm

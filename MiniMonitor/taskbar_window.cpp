@@ -10,7 +10,7 @@ namespace {
 // Explorer 的 TrayNotifyWnd 是当前任务栏实际使用的托盘/时钟容器。
 // 显示层的右边缘必须停在它左侧，不能再用一个固定像素值猜测。
 constexpr int kTrayGap = 4;
-constexpr int kRowSpace = 6;
+constexpr int kRowSpace = 10;
 
 HWND FindTrayNotifyWindow(HWND taskbar) {
     if (!taskbar) return nullptr;
@@ -87,11 +87,17 @@ void TaskbarWindow::Destroy() {
 
 void TaskbarWindow::RecreateFont() {
     if (font_) { DeleteObject(font_); font_ = nullptr; }
-    // 字号：pt → 像素。负数表示用磅为单位（Windows 约定）。
-    HDC screen = GetDC(nullptr);
-    const int dpi_y = screen ? GetDeviceCaps(screen, LOGPIXELSY) : 96;
-    if (screen) ReleaseDC(nullptr, screen);
-    int height = -MulDiv(cfg_.font_size, dpi_y > 0 ? dpi_y : 96, 72);
+    // 字号：pt → 像素。必须使用当前任务栏窗口所在显示器的 DPI；
+    // GetDeviceCaps(GetDC(nullptr), LOGPIXELSY) 在高 DPI 环境下通常仍是
+    // 系统 96 DPI，会让 PerMonitorV2 程序的字体看起来缩小一半。
+    UINT dpi_y = hwnd_ ? GetDpiForWindow(hwnd_) : 0;
+    if (dpi_y == 0) {
+        HDC screen = GetDC(nullptr);
+        dpi_y = screen ? static_cast<UINT>(GetDeviceCaps(screen, LOGPIXELSY)) : 96;
+        if (screen) ReleaseDC(nullptr, screen);
+    }
+    if (dpi_y == 0) dpi_y = 96;
+    int height = -MulDiv(cfg_.font_size, static_cast<int>(dpi_y), 72);
     DWORD weight = cfg_.font_bold ? FW_BOLD : FW_NORMAL;
     font_ = CreateFontW(
         height, 0, 0, 0, weight, FALSE, FALSE, FALSE,
@@ -383,16 +389,21 @@ LRESULT TaskbarWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
         case WM_TIMER:      OnTimer(); return 0;
         case WM_ERASEBKGND: return 1;   // 告诉系统"我已擦背景"，避免闪烁
         case WM_NCHITTEST:
-            // 监控窗口用颜色键透明：文字像素可命中，背景（颜色键）像素本就穿透。
-            // 这里统一返回 HTTRANSPARENT，让普通鼠标点击都穿到任务栏；右键由
-            // App 的轻量鼠标钩子单独拦截并弹出设置菜单。这样左键不挡任务栏操作，
-            // 右键又能稳定打开设置。
-            return HTTRANSPARENT;
+            // 正常路径下显示层始终鼠标穿透：它绝不占用任何普通点击。
+            // App 的低级鼠标回调只在监控矩形内抑制右键，Raw Input 负责菜单外
+            // 点击观察；仅当两条输入路径都不可用时，才启用本窗口的局部回退。
+            // 回退作用范围严格限于这块文字区域，不会影响屏幕其它区域。
+            return input_fallback_enabled_ ? HTCLIENT : HTTRANSPARENT;
         case WM_RBUTTONUP: {
-            POINT pt{};
-            if (context_menu_target_ && GetCursorPos(&pt)) {
-                PostMessageW(context_menu_target_, WM_MINIMONITOR_CONTEXT_MENU,
-                             0, MAKELPARAM(pt.x, pt.y));
+            if (!input_fallback_enabled_) {
+                return DefWindowProcW(hwnd, msg, wp, lp);
+            }
+            if (context_menu_target_) {
+                POINT pt{};
+                if (GetCursorPos(&pt)) {
+                    PostMessageW(context_menu_target_, WM_MINIMONITOR_CONTEXT_MENU,
+                                 0, MAKELPARAM(pt.x, pt.y));
+                }
             }
             return 0;
         }

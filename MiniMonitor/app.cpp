@@ -44,15 +44,16 @@ bool App::Init(HINSTANCE hinst, int cmd_show) {
 
     // 3. 任务栏窗口
     if (!taskbar_wnd_.Create(hinst, cfg_)) return false;
-    // 右键菜单请求由任务栏窗口通过 WM_MINIMONITOR_CONTEXT_MENU 转发到这里。
+    // 透明显示层本身仍然鼠标穿透；低级回调只负责抑制监控区域的右键，
+    // 避免同一个右键继续落到 Explorer 的任务栏菜单。
     taskbar_wnd_.SetContextMenuTarget(hidden_hwnd_);
-    // 先登记实例指针，再安装钩子，确保钩子回调能安全访问实例。
     active_instance_ = this;
-    // 安装轻量右键钩子：监控窗口用颜色键透明，背景区鼠标会穿透到任务栏，
-    // 导致右键点空白处收不到。钩子仅在右键抬起且坐标在监控窗口内时拦截。
     right_click_hook_ = SetWindowsHookExW(WH_MOUSE_LL,
-                                          &App::LowLevelRightClickProc,
+                                          &App::LowLevelMouseProc,
                                           inst_, 0);
+    raw_mouse_registered_ = RegisterRawMouseInput();
+    taskbar_wnd_.SetInputFallbackEnabled(!raw_mouse_registered_ &&
+                                         !right_click_hook_);
 
     // 4. 托盘图标
     if (cfg_.show_tray_icon) {
@@ -82,9 +83,12 @@ bool App::CreateHiddenWindow() {
     wc.lpszClassName = kHiddenWndClass;
     RegisterClassExW(&wc);
 
+    // 这是内部消息窗口，不应出现在任务栏或 Alt+Tab 中。
+    // 右键菜单弹出前，TrayIcon 会临时把它显示成 1x1 的屏幕外窗口，
+    // 这样它可以合法地成为菜单的前台所有者，同时不会在桌面上闪出大窗口。
     hidden_hwnd_ = CreateWindowExW(
-        0, kHiddenWndClass, L"MiniMonitor", WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        WS_EX_TOOLWINDOW, kHiddenWndClass, L"MiniMonitor", WS_POPUP,
+        -32000, -32000, 1, 1,
         nullptr, nullptr, inst_, this);
     return hidden_hwnd_ != nullptr;
 }
@@ -106,6 +110,9 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             self->taskbar_wnd_.Destroy();
             if (self->taskbar_wnd_.Create(self->inst_, self->cfg_)) {
                 self->taskbar_wnd_.SetContextMenuTarget(self->hidden_hwnd_);
+                self->taskbar_wnd_.SetInputFallbackEnabled(
+                    !self->raw_mouse_registered_ &&
+                    !self->right_click_hook_);
             }
             // Explorer 重启后通知区域图标通常也会被清空，需要重新添加。
             if (self->cfg_.show_tray_icon) {
@@ -124,6 +131,18 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (msg) {
             case WM_TIMER:
                 self->DoSample();
+                return 0;
+            case WM_INPUT:
+                self->HandleRawMouseInput(reinterpret_cast<HRAWINPUT>(lp));
+                return 0;
+            case WM_ACTIVATEAPP:
+                // 菜单打开期间如果其它应用被激活，主动结束当前菜单。
+                // 这为系统菜单循环补上失焦兜底，避免 owner 窗口不可见时
+                // 点击其它窗口后菜单仍残留在桌面上。
+                if (!wp) EndMenu();
+                return 0;
+            case WM_CANCELMODE:
+                EndMenu();
                 return 0;
             case WM_COMMAND:
                 self->HandleCommand(static_cast<UINT>(LOWORD(wp)));
@@ -155,7 +174,9 @@ void App::Shutdown() {
         UnhookWindowsHookEx(right_click_hook_);
         right_click_hook_ = nullptr;
     }
+    right_click_captured_ = false;
     if (active_instance_ == this) active_instance_ = nullptr;
+    UnregisterRawMouseInput();
     if (timer_id_) { KillTimer(hidden_hwnd_, timer_id_); timer_id_ = 0; }
     tray_.Remove();
     taskbar_wnd_.Destroy();
@@ -165,27 +186,101 @@ void App::Shutdown() {
     cfg_mgr_.Save(cfg_);
 }
 
-// 轻量右键钩子。设计目标：对系统鼠标的影响降到最小。
-// - 只在 HC_ACTION + WM_RBUTTONUP 时做一次 PtInRect，其它情况零开销放行。
-// - 不调用任何阻塞 API；用 PostMessage 异步把菜单请求投给调度窗口。
-// - 不持有锁、不访问易变状态，仅读取窗口矩形。
-LRESULT CALLBACK App::LowLevelRightClickProc(int code, WPARAM wp, LPARAM lp) {
+bool App::RegisterRawMouseInput() {
+    if (!hidden_hwnd_) return false;
+
+    RAWINPUTDEVICE device{};
+    device.usUsagePage = 0x01;  // Generic Desktop Controls
+    device.usUsage     = 0x02;  // Mouse
+    // INPUTSINK 仅把一份 Raw Input 通知投递给本程序；不使用 NOLEGACY，
+    // 因此 Explorer 和其它应用仍会照常收到全部标准鼠标消息。
+    device.dwFlags     = RIDEV_INPUTSINK;
+    device.hwndTarget  = hidden_hwnd_;
+    return RegisterRawInputDevices(&device, 1, sizeof(device)) != FALSE;
+}
+
+void App::UnregisterRawMouseInput() {
+    if (!raw_mouse_registered_) return;
+
+    RAWINPUTDEVICE device{};
+    device.usUsagePage = 0x01;
+    device.usUsage     = 0x02;
+    device.dwFlags     = RIDEV_REMOVE;
+    device.hwndTarget  = nullptr;
+    RegisterRawInputDevices(&device, 1, sizeof(device));
+    raw_mouse_registered_ = false;
+}
+
+void App::HandleRawMouseInput(HRAWINPUT input) {
+    if (!raw_mouse_registered_ || !input || !hidden_hwnd_) return;
+
+    RAWINPUT raw{};
+    UINT size = sizeof(raw);
+    const UINT bytes = GetRawInputData(input, RID_INPUT, &raw, &size,
+                                       sizeof(RAWINPUTHEADER));
+    if (bytes == static_cast<UINT>(-1) || raw.header.dwType != RIM_TYPEMOUSE) {
+        return;
+    }
+    POINT pt{};
+    const USHORT buttons = raw.data.mouse.usButtonFlags;
+    const USHORT click_buttons = RI_MOUSE_LEFT_BUTTON_DOWN
+                               | RI_MOUSE_LEFT_BUTTON_UP
+                               | RI_MOUSE_RIGHT_BUTTON_DOWN
+                               | RI_MOUSE_RIGHT_BUTTON_UP;
+    if ((buttons & click_buttons) != 0 && GetCursorPos(&pt)) {
+        // TrackPopupMenu 的系统模态循环在某些前台激活场景下不会把
+        // 外部点击完整转成取消消息；这里仅观察 Raw Input，在菜单外
+        // 主动结束菜单。WindowFromPoint 命中菜单本身时保持正常选项点击。
+        if (tray_.IsMenuOpen() && !tray_.IsPointInMenu(pt)) {
+            tray_.CancelMenu();
+            return;
+        }
+    }
+
+    if (!right_click_hook_ &&
+        (buttons & RI_MOUSE_RIGHT_BUTTON_UP) != 0 &&
+        GetCursorPos(&pt) && taskbar_wnd_.ContainsScreenPoint(pt)) {
+        // 仅在低级回调不可用的兼容回退路径中，观察标准右键抬起后弹菜单；
+        // 正常路径由 LowLevelMouseProc 负责抑制系统右键并投递请求。
+        PostMessageW(hidden_hwnd_, WM_MINIMONITOR_CONTEXT_MENU,
+                     0, MAKELPARAM(pt.x, pt.y));
+    }
+}
+
+LRESULT CALLBACK App::LowLevelMouseProc(int code, WPARAM wp, LPARAM lp) {
     App* self = active_instance_;
-    // 绝大多数回调：code != HC_ACTION、非右键抬起、或实例未就绪，立即放行。
-    if (code == HC_ACTION && wp == WM_RBUTTONUP && self) {
-        const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
-        if (mouse) {
-            POINT pt{ mouse->pt.x, mouse->pt.y };
-            // 命中监控窗口才拦截；否则放行给任务栏/其它窗口。
-            if (self->taskbar_wnd_.ContainsScreenPoint(pt) && self->hidden_hwnd_) {
-                PostMessageW(self->hidden_hwnd_, WM_MINIMONITOR_CONTEXT_MENU,
-                             0, MAKELPARAM(pt.x, pt.y));
-                // 吞掉这次右键抬起，阻止 Explorer 在监控文字上弹系统菜单。
+    if (code == HC_ACTION && self && lp) {
+        const bool right_down = wp == WM_RBUTTONDOWN || wp == WM_NCRBUTTONDOWN;
+        const bool right_up   = wp == WM_RBUTTONUP   || wp == WM_NCRBUTTONUP;
+        if (right_down || right_up) {
+            const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lp);
+            const POINT pt = mouse->pt;
+
+            if (right_down) {
+                // 每次新的右键按下都从干净状态开始，避免丢失上一轮抬起
+                // 后把下一次外部右键误认为仍属于监控区域。
+                self->right_click_captured_ = false;
+                if (self->taskbar_wnd_.ContainsScreenPoint(pt)) {
+                    self->right_click_captured_ = true;
+                    // 只吞掉监控矩形内的右键按下，防止 Explorer 开始自己的菜单。
+                    return 1;
+                }
+            } else if (right_up && self->right_click_captured_) {
+                self->right_click_captured_ = false;
+                if (self->hidden_hwnd_ &&
+                    self->taskbar_wnd_.ContainsScreenPoint(pt)) {
+                    PostMessageW(self->hidden_hwnd_,
+                                 WM_MINIMONITOR_CONTEXT_MENU,
+                                 0, MAKELPARAM(pt.x, pt.y));
+                }
+                // 配对吞掉右键抬起，Explorer 不会再收到不完整的右键序列。
                 return 1;
             }
         }
     }
-    return CallNextHookEx(self ? self->right_click_hook_ : nullptr, code, wp, lp);
+
+    // 所有非目标事件，以及监控区域外的右键，必须继续传给下一个钩子。
+    return CallNextHookEx(nullptr, code, wp, lp);
 }
 
 // ---------- 业务 ----------
