@@ -106,7 +106,8 @@ Config ConfigManager::Load() {
     if (c.sample_interval_ms > 60000) c.sample_interval_ms = 60000;
     if (c.font_size < 6) c.font_size = 6;
     if (c.font_size > 48) c.font_size = 48;
-    if (c.item_space < 0) c.item_space = 0;
+    // 当前布局需要足够的列间距；兼容旧 INI 时也不允许恢复成过窄的 8/20px。
+    if (c.item_space < 28) c.item_space = 28;
     if (c.item_space > 64) c.item_space = 64;
     if (c.taskbar_right_space < 0) c.taskbar_right_space = 0;
     if (c.taskbar_right_space > 2000) c.taskbar_right_space = 2000;

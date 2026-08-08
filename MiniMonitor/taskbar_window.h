@@ -14,7 +14,7 @@
 
 namespace mm {
 
-// 任务栏显示窗口把右键设置请求转交给 App 的调度窗口处理。
+// Raw Input 与局部回退路径共用的异步菜单请求。
 inline constexpr UINT WM_MINIMONITOR_CONTEXT_MENU = WM_APP + 2;
 
 class TaskbarWindow {
@@ -38,8 +38,9 @@ public:
     // 应用新配置（颜色/字体/标签等变化时）。
     void ApplyConfig(const Config& cfg);
 
-    // 设置右键菜单请求的接收窗口（通常是 App 的不可见调度窗口）。
+    // Raw Input 不可用时才启用局部回退；绝不会变成全局输入拦截。
     void SetContextMenuTarget(HWND target) { context_menu_target_ = target; }
+    void SetInputFallbackEnabled(bool enabled) { input_fallback_enabled_ = enabled; }
 
     bool ContainsScreenPoint(POINT pt) const {
         RECT rc{};
@@ -83,6 +84,7 @@ private:
     HINSTANCE   inst_     = nullptr;
     HWND        hwnd_     = nullptr;
     HWND        context_menu_target_ = nullptr;
+    bool        input_fallback_enabled_ = false;
     Config      cfg_;
     HFONT       font_     = nullptr;
     Monitor*    monitor_  = nullptr;   // 不持有，仅 Refresh 时借用

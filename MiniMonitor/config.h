@@ -31,7 +31,7 @@ struct Config {
     bool short_speed_unit  = false;   // 速率省略单位
     bool hide_percent      = false;   // 百分比省略 %
     bool separate_unit_space = true;  // 数值与单位间留空格
-    int  item_space        = 20;      // 两列之间的间距（像素），让布局更舒展
+    int  item_space        = 28;      // 两列之间的间距（像素），让布局更舒展
 
     // —— 任务栏定位 ——
     // 找不到 Explorer 托盘容器时的回退留白（像素）；正常情况下会以
