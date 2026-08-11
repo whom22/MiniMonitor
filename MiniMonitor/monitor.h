@@ -46,7 +46,7 @@ public:
     // 采样本身耗时 <0.1ms，可在 UI 线程直接调用。
     Metrics Update();
 
-    // 切换流量统计来源；auto=物理网卡，all=全部非过滤接口，
+    // 切换流量统计来源；auto=按默认路由自动选择，all=全部非过滤接口，
     // 其它值为 EnumerateNetworkInterfaces() 返回的具体接口 ID。
     void SetNetworkSelection(const std::wstring& selection);
     std::vector<NetworkInterfaceInfo> EnumerateNetworkInterfaces() const;
@@ -76,6 +76,16 @@ private:
 
     // 网络基线
     std::wstring network_selection_ = kNetworkSelectionAuto;
+    struct NetworkCounter {
+        ULONGLONG luid = 0;
+        ULONGLONG in_octets = 0;
+        ULONGLONG out_octets = 0;
+    };
+    std::vector<NetworkCounter> previous_network_counters_;
+    ULONGLONG auto_active_luid_ = 0;
+    ULONGLONG auto_pending_luid_ = 0;
+    int auto_pending_samples_ = 0;
+    bool network_source_changed_ = false;
     ULONGLONG prev_in_ = 0;
     ULONGLONG prev_out_ = 0;
     // CPU 基线

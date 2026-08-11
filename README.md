@@ -91,7 +91,8 @@ msbuild MiniMonitor.sln /p:Configuration=Release /p:Platform=x64
 直接双击 `MiniMonitor.exe` 运行。首次正常退出时会在 exe 同目录生成 `MiniMonitor.ini` 配置文件（绿色便携）。
 
 - **监控区域/托盘右键**：流量网卡切换、开机自启、托盘图标开关、打开任务管理器、关于、退出
-- **流量网卡**：默认“自动（物理网卡）”；开启 VPN 后可在“流量网卡”子菜单选择具体 VPN/虚拟网卡，或选择全部非过滤接口（可能重复计数）
+- **流量网卡**：默认“自动（默认路由，VPN 优先）”；开启 VPN 后会在默认路由稳定后自动切换到 VPN，或可在子菜单手动选择具体 VPN/虚拟网卡
+- 注意：仅代理型或分流 VPN 如果没有改变系统默认路由，自动模式无法仅凭系统路由表判断其逻辑流量；此时可在子菜单手动选中对应 VPN 网卡
 - 监控文字始终显示；不再提供容易误触的“隐藏窗口”功能
 - **鼠标悬停托盘图标**：显示当前数值
 
@@ -120,7 +121,7 @@ hide_percent = 0                 ; 1=百分比不显示 % 号
 item_space = 28                  ; 两列之间的间距（像素）
 
 [Network]
-interface = auto                 ; auto=物理网卡，all=全部非过滤接口（可能重复），也可填写具体接口 ID
+interface = auto                 ; auto=默认路由自动选择（VPN 优先），all=全部非过滤接口（可能重复）
 
 [Taskbar]
 taskbar_right_space = 180        ; 找不到托盘容器时的回退留白；正常情况自动读取实际托盘边界
@@ -165,7 +166,7 @@ MiniMonitor/
 ## 实现要点（为什么这样设计能"占用最小"）
 
 ### 1. 数据采集 —— 纯系统 API，零依赖
-- **网络流量**：`GetIfTable2`（IP Helper API）默认只累加活动硬件接口的 `InOctets/OutOctets`，过滤器接口始终排除；也可从右键菜单切换到具体 VPN/虚拟接口或全部非过滤接口（此模式可能包含重复计数）。两次采样差分得到字节/秒速率。**不依赖任何第三方库**。
+- **网络流量**：`GetIfTable2`（IP Helper API）默认跟随 IPv4/IPv6 默认路由，VPN 接管默认路由后自动选择 VPN 接口；默认路由不可用时按活动流量回退到物理接口。接口切换需连续 3 次采样确认，避免频繁跳变；过滤器接口始终排除。**不依赖任何第三方库**。
 - **CPU**：`GetSystemTimes` 拿 idle/kernel/user 三个时间，差分算占用率。比性能计数器轻得多。
 - **内存**：`GlobalMemoryStatusEx` 的 `dwMemoryLoad` 直接给百分比。
 

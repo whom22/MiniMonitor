@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <limits>
 #include <set>
+#include <utility>
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "iphlpapi.lib")
@@ -44,6 +45,68 @@ static inline ULONGLONG FileTimeToU64(const FILETIME& ft) {
     return (static_cast<ULONGLONG>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
 }
 
+struct NetworkCandidate {
+    ULONGLONG luid = 0;
+    ULONGLONG in_octets = 0;
+    ULONGLONG out_octets = 0;
+    bool hardware = false;
+};
+
+static bool IsUsableNetworkRow(const MIB_IF_ROW2& row) {
+    if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) return false;
+    if (row.Type == IF_TYPE_TUNNEL) return false;
+    if (row.OperStatus != IfOperStatusUp) return false;
+    if (row.InterfaceAndOperStatusFlags.FilterInterface) return false;
+    return row.InterfaceLuid.Value != 0;
+}
+
+static void AppendUniqueRouteInterface(std::vector<ULONGLONG>& result,
+                                       ULONGLONG luid) {
+    if (luid == 0) return;
+    for (const ULONGLONG existing : result) {
+        if (existing == luid) return;
+    }
+    result.push_back(luid);
+}
+
+static void AppendDefaultRouteInterfaces(ADDRESS_FAMILY family,
+                                         std::vector<ULONGLONG>& result) {
+    PMIB_IPFORWARD_TABLE2 table = nullptr;
+    if (GetIpForwardTable2(family, &table) != NO_ERROR || table == nullptr) {
+        if (table) FreeMibTable(table);
+        return;
+    }
+
+    ULONG best_metric = (std::numeric_limits<ULONG>::max)();
+    std::vector<ULONGLONG> family_routes;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IPFORWARD_ROW2& row = table->Table[i];
+        if (row.DestinationPrefix.PrefixLength != 0 ||
+            row.InterfaceLuid.Value == 0) {
+            continue;
+        }
+        if (row.Metric < best_metric) {
+            best_metric = row.Metric;
+            family_routes.clear();
+        }
+        if (row.Metric == best_metric) {
+            AppendUniqueRouteInterface(family_routes,
+                                       row.InterfaceLuid.Value);
+        }
+    }
+    for (const ULONGLONG luid : family_routes) {
+        AppendUniqueRouteInterface(result, luid);
+    }
+    FreeMibTable(table);
+}
+
+static std::vector<ULONGLONG> GetDefaultRouteInterfaces() {
+    std::vector<ULONGLONG> result;
+    AppendDefaultRouteInterfaces(AF_INET, result);
+    AppendDefaultRouteInterfaces(AF_INET6, result);
+    return result;
+}
+
 void Monitor::SetNetworkSelection(const std::wstring& selection) {
     const std::wstring normalized = selection.empty()
         ? std::wstring(kNetworkSelectionAuto) : selection;
@@ -53,6 +116,11 @@ void Monitor::SetNetworkSelection(const std::wstring& selection) {
     // 统计来源改变后，旧接口的计数不能参与新接口的差分，
     // 否则第一次刷新可能显示一个虚假的超大速率。
     has_network_baseline_ = false;
+    previous_network_counters_.clear();
+    auto_active_luid_ = 0;
+    auto_pending_luid_ = 0;
+    auto_pending_samples_ = 0;
+    network_source_changed_ = false;
     prev_in_ = 0;
     prev_out_ = 0;
     acc_up_ = 0;
@@ -71,11 +139,7 @@ std::vector<NetworkInterfaceInfo> Monitor::EnumerateNetworkInterfaces() const {
     std::set<std::wstring> seen;
     for (ULONG i = 0; i < table->NumEntries; ++i) {
         const MIB_IF_ROW2& row = table->Table[i];
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-        if (row.Type == IF_TYPE_TUNNEL) continue;
-        if (row.OperStatus != IfOperStatusUp) continue;
-        // 过滤器接口可能再次暴露同一份物理计数，不能作为独立来源。
-        if (row.InterfaceAndOperStatusFlags.FilterInterface) continue;
+        if (!IsUsableNetworkRow(row)) continue;
 
         const std::wstring id = std::to_wstring(row.InterfaceLuid.Value);
         if (!seen.insert(id).second) continue;
@@ -105,36 +169,131 @@ bool Monitor::SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out) {
         return false;
     }
 
+    std::vector<NetworkCandidate> candidates;
+    std::vector<NetworkCounter> current_counters;
+    candidates.reserve(table->NumEntries);
+    current_counters.reserve(table->NumEntries);
     for (ULONG i = 0; i < table->NumEntries; ++i) {
         const MIB_IF_ROW2& row = table->Table[i];
-        // 跳过环回、断开和隧道接口。IfType 取值见 ifmib.h：
-        //   IF_TYPE_SOFTWARE_LOOPBACK = 24
-        //   IF_TYPE_TUNNEL            = 131
-        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
-        if (row.Type == IF_TYPE_TUNNEL) continue;
-        // OperStatus: 仅统计 Up 的网卡，避免把断开的虚拟网卡计入。
-        if (row.OperStatus != IfOperStatusUp) continue;
+        if (!IsUsableNetworkRow(row)) continue;
 
-        // 过滤器接口可能与下层接口暴露同一份计数，始终排除。
-        if (row.InterfaceAndOperStatusFlags.FilterInterface) continue;
-
-        bool include = false;
-        if (network_selection_ == kNetworkSelectionAuto) {
-            // 默认只统计物理接口，避免 VPN/Hyper-V 等虚拟接口重复计数。
-            include = row.InterfaceAndOperStatusFlags.HardwareInterface != 0;
-        } else if (network_selection_ == kNetworkSelectionAll) {
-            // 明确由用户选择时，允许把物理接口和 VPN/虚拟接口一起统计。
-            include = true;
-        } else {
-            include = std::to_wstring(row.InterfaceLuid.Value) == network_selection_;
-        }
-        if (!include) continue;
-
-        // InOctets = 下行（接收），OutOctets = 上行（发送）。
-        // 64 位计数，不易溢出。
-        out_total_in  += row.InOctets;
-        out_total_out += row.OutOctets;
+        const ULONGLONG luid = row.InterfaceLuid.Value;
+        candidates.push_back({luid, row.InOctets, row.OutOctets,
+                              row.InterfaceAndOperStatusFlags.HardwareInterface != 0});
+        current_counters.push_back({luid, row.InOctets, row.OutOctets});
     }
+
+    auto find_candidate = [&](ULONGLONG luid) -> const NetworkCandidate* {
+        for (const auto& candidate : candidates) {
+            if (candidate.luid == luid) return &candidate;
+        }
+        return nullptr;
+    };
+    auto previous_delta = [&](const NetworkCandidate& candidate) -> ULONGLONG {
+        for (const auto& previous : previous_network_counters_) {
+            if (previous.luid != candidate.luid) continue;
+            if (candidate.in_octets < previous.in_octets ||
+                candidate.out_octets < previous.out_octets) {
+                return 0;
+            }
+            const ULONGLONG delta_in = candidate.in_octets - previous.in_octets;
+            const ULONGLONG delta_out = candidate.out_octets - previous.out_octets;
+            const ULONGLONG max_value = (std::numeric_limits<ULONGLONG>::max)();
+            return delta_in > max_value - delta_out
+                ? max_value : delta_in + delta_out;
+        }
+        return 0;
+    };
+    auto choose_busy_candidate = [&](bool hardware_only) -> ULONGLONG {
+        const NetworkCandidate* best = nullptr;
+        ULONGLONG best_delta = 0;
+        for (const auto& candidate : candidates) {
+            if (hardware_only && !candidate.hardware) continue;
+            const ULONGLONG delta = previous_delta(candidate);
+            if (!best || delta > best_delta) {
+                best = &candidate;
+                best_delta = delta;
+            }
+        }
+        return best ? best->luid : 0;
+    };
+
+    if (network_selection_ == kNetworkSelectionAuto) {
+        // 自动模式优先跟随 IPv4/IPv6 的默认路由。VPN 接管默认路由后，
+        // 这里会得到 VPN 的 LUID；没有可用默认路由时再按活动流量回退。
+        const auto route_interfaces = GetDefaultRouteInterfaces();
+        ULONGLONG desired_luid = 0;
+        ULONGLONG desired_delta = 0;
+        for (const ULONGLONG route_luid : route_interfaces) {
+            const NetworkCandidate* candidate = find_candidate(route_luid);
+            if (!candidate) continue;
+            const ULONGLONG delta = previous_delta(*candidate);
+            if (desired_luid == 0 || delta > desired_delta) {
+                desired_luid = candidate->luid;
+                desired_delta = delta;
+            }
+        }
+        if (desired_luid == 0) {
+            desired_luid = choose_busy_candidate(true);
+            if (desired_luid == 0) desired_luid = choose_busy_candidate(false);
+        }
+
+        constexpr int kAutoSwitchSamples = 3;
+        const bool active_present = find_candidate(auto_active_luid_) != nullptr;
+        if (auto_active_luid_ == 0) {
+            auto_active_luid_ = desired_luid;
+            auto_pending_luid_ = 0;
+            auto_pending_samples_ = 0;
+            network_source_changed_ = true;
+        } else if (desired_luid == auto_active_luid_) {
+            auto_pending_luid_ = 0;
+            auto_pending_samples_ = 0;
+        } else if (!active_present && desired_luid != 0) {
+            // 当前接口已经消失，不能等待稳定窗口，否则 VPN 断开后会长时间显示旧值。
+            auto_active_luid_ = desired_luid;
+            auto_pending_luid_ = 0;
+            auto_pending_samples_ = 0;
+            network_source_changed_ = true;
+        } else if (desired_luid == 0) {
+            auto_pending_luid_ = 0;
+            auto_pending_samples_ = 0;
+            if (!active_present) {
+                auto_active_luid_ = 0;
+                network_source_changed_ = true;
+            }
+        } else if (desired_luid != 0) {
+            if (auto_pending_luid_ != desired_luid) {
+                auto_pending_luid_ = desired_luid;
+                auto_pending_samples_ = 1;
+            } else if (++auto_pending_samples_ >= kAutoSwitchSamples) {
+                auto_active_luid_ = desired_luid;
+                auto_pending_luid_ = 0;
+                auto_pending_samples_ = 0;
+                network_source_changed_ = true;
+            }
+        }
+
+        const NetworkCandidate* selected = find_candidate(auto_active_luid_);
+        if (selected) {
+            out_total_in = selected->in_octets;
+            out_total_out = selected->out_octets;
+        }
+    } else if (network_selection_ == kNetworkSelectionAll) {
+        // 用户明确要求全部接口时才累加，保留其可能重复计数的语义。
+        for (const auto& candidate : candidates) {
+            out_total_in += candidate.in_octets;
+            out_total_out += candidate.out_octets;
+        }
+    } else {
+        for (const auto& candidate : candidates) {
+            if (std::to_wstring(candidate.luid) != network_selection_) continue;
+            out_total_in = candidate.in_octets;
+            out_total_out = candidate.out_octets;
+            break;
+        }
+    }
+
+    previous_network_counters_ = std::move(current_counters);
     FreeMibTable(table);
     return true;
 }
@@ -181,16 +340,18 @@ Metrics Monitor::Update() {
     bool have_in_delta = false;
     bool have_out_delta = false;
     const bool network_ok = SampleNetwork(cur_in, cur_out);
+    const bool network_source_changed = network_source_changed_;
+    network_source_changed_ = false;
     if (!network_ok) {
         has_network_baseline_ = false;
     } else {
         // 差分。注意计数器可能在系统睡眠/网卡重置后回绕或变小，做保护。
-        if (has_network_baseline_ && cur_in >= prev_in_) {
+        if (!network_source_changed && has_network_baseline_ && cur_in >= prev_in_) {
             delta_in = cur_in - prev_in_;
             have_in_delta = true;
             m.net_down_bytes_per_sec = BytesPerSecond(delta_in, elapsed_ms);
         }
-        if (has_network_baseline_ && cur_out >= prev_out_) {
+        if (!network_source_changed && has_network_baseline_ && cur_out >= prev_out_) {
             delta_out = cur_out - prev_out_;
             have_out_delta = true;
             m.net_up_bytes_per_sec = BytesPerSecond(delta_out, elapsed_ms);

@@ -56,7 +56,7 @@ UINT TrayIcon::PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
         AppendMenuW(network_menu,
                     MF_STRING | (network_selection == kNetworkSelectionAuto
                                      ? MF_CHECKED : MF_UNCHECKED),
-                    IDM_NETWORK_AUTO, L"自动（物理网卡）");
+                    IDM_NETWORK_AUTO, L"自动（默认路由，VPN优先）");
         AppendMenuW(network_menu,
                     MF_STRING | (network_selection == kNetworkSelectionAll
                                      ? MF_CHECKED : MF_UNCHECKED),

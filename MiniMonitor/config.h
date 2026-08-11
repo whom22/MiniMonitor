@@ -33,7 +33,7 @@ struct Config {
     bool separate_unit_space = true;  // 数值与单位间留空格
     int  item_space        = 28;      // 两列之间的间距（像素），让布局更舒展
 
-    // 网络流量来源：auto=自动统计物理网卡，all=全部非过滤接口，
+    // 网络流量来源：auto=按默认路由自动选择，all=全部非过滤接口，
     // 也可以保存具体网卡的 Interface LUID。
     std::wstring network_interface = L"auto";
 
