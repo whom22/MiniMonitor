@@ -92,6 +92,9 @@ Config ConfigManager::Load() {
     c.separate_unit_space = GetBool(L"Display", L"separate_unit_space", c.separate_unit_space, f);
     c.item_space          = GetInt (L"Display", L"item_space",          c.item_space,          f);
 
+    c.network_interface = GetStr(L"Network", L"interface", c.network_interface, f);
+    if (c.network_interface.empty()) c.network_interface = L"auto";
+
     c.taskbar_right_space = GetInt(L"Taskbar", L"taskbar_right_space", c.taskbar_right_space, f);
     c.window_offset_x     = GetInt(L"Taskbar", L"window_offset_x",     c.window_offset_x,     f);
     c.window_offset_y     = GetInt(L"Taskbar", L"window_offset_y",     c.window_offset_y,     f);
@@ -149,6 +152,8 @@ void ConfigManager::Save(const Config& c) {
     PutBool(L"Display", L"hide_percent",        c.hide_percent,        f);
     PutBool(L"Display", L"separate_unit_space", c.separate_unit_space, f);
     PutInt (L"Display", L"item_space",          c.item_space,          f);
+
+    PutStr (L"Network", L"interface", c.network_interface, f);
 
     PutInt (L"Taskbar", L"taskbar_right_space", c.taskbar_right_space, f);
     PutInt (L"Taskbar", L"window_offset_x",     c.window_offset_x,     f);

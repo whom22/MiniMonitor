@@ -1,6 +1,7 @@
 // taskbar_window.cpp — 任务栏窗口实现
 #include "taskbar_window.h"
 #include <algorithm>
+#include <cwchar>
 #include <windowsx.h>
 
 namespace mm {
@@ -15,6 +16,19 @@ constexpr int kRowSpace = 10;
 HWND FindTrayNotifyWindow(HWND taskbar) {
     if (!taskbar) return nullptr;
     return FindWindowExW(taskbar, nullptr, L"TrayNotifyWnd", nullptr);
+}
+
+bool IsShellDesktopWindow(HWND hwnd) {
+    wchar_t class_name[64] = {};
+    if (!hwnd || GetClassNameW(hwnd, class_name,
+                               static_cast<int>(sizeof(class_name) /
+                                                sizeof(class_name[0]))) <= 0) {
+        return true;
+    }
+    return wcscmp(class_name, L"Progman") == 0
+        || wcscmp(class_name, L"WorkerW") == 0
+        || wcscmp(class_name, L"Shell_TrayWnd") == 0
+        || wcscmp(class_name, L"Shell_SecondaryTrayWnd") == 0;
 }
 
 } // namespace
@@ -199,11 +213,57 @@ void TaskbarWindow::Reposition() {
 
     RECT rc = CalcDesiredRect(sz.cx, sz.cy);
     // 用 SWP_NOZORDER 保持 TOPMOST，SWP_NOACTIVATE 不抢焦点。
-    // 不要因为显示器变化而把用户手动隐藏的窗口重新显示出来。
-    UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
-    if (IsWindowVisible(hwnd_)) flags |= SWP_SHOWWINDOW;
+    // 全屏状态由 UpdateFullscreenVisibility 维护；重定位不能把隐藏层意外显示。
+    UINT flags = SWP_NOZORDER | SWP_NOACTIVATE
+               | (fullscreen_hidden_ ? SWP_HIDEWINDOW : SWP_SHOWWINDOW);
     SetWindowPos(hwnd_, nullptr, rc.left, rc.top,
                  rc.right - rc.left, rc.bottom - rc.top, flags);
+}
+
+bool TaskbarWindow::IsFullscreenForeground() const {
+    if (!hwnd_) return false;
+
+    HWND foreground = GetForegroundWindow();
+    if (!foreground || foreground == hwnd_ || !IsWindowVisible(foreground)
+        || IsIconic(foreground) || IsShellDesktopWindow(foreground)) {
+        return false;
+    }
+
+    // 覆盖层的内部窗口（包括菜单 owner）不应被判定为用户全屏窗口。
+    DWORD foreground_pid = 0;
+    GetWindowThreadProcessId(foreground, &foreground_pid);
+    if (foreground_pid == GetCurrentProcessId()) return false;
+
+    const HMONITOR taskbar_monitor =
+        MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    const HMONITOR foreground_monitor =
+        MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+    if (!taskbar_monitor || taskbar_monitor != foreground_monitor) return false;
+
+    MONITORINFO monitor_info{};
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (!GetMonitorInfoW(taskbar_monitor, &monitor_info)) return false;
+
+    RECT window_rect{};
+    if (!GetWindowRect(foreground, &window_rect)) return false;
+
+    // 允许少量边框/取整误差，但要求窗口覆盖整个显示器，而不是普通最大化
+    // （普通最大化只覆盖 rcWork，底部仍会避开任务栏）。
+    constexpr LONG kFullscreenTolerance = 4;
+    return window_rect.left <= monitor_info.rcMonitor.left + kFullscreenTolerance
+        && window_rect.top <= monitor_info.rcMonitor.top + kFullscreenTolerance
+        && window_rect.right >= monitor_info.rcMonitor.right - kFullscreenTolerance
+        && window_rect.bottom >= monitor_info.rcMonitor.bottom - kFullscreenTolerance;
+}
+
+void TaskbarWindow::UpdateFullscreenVisibility() {
+    if (!hwnd_) return;
+
+    const bool should_hide = IsFullscreenForeground();
+    if (should_hide == fullscreen_hidden_) return;
+
+    fullscreen_hidden_ = should_hide;
+    ShowWindow(hwnd_, should_hide ? SW_HIDE : SW_SHOWNOACTIVATE);
 }
 
 void TaskbarWindow::Refresh(Monitor& monitor) {
@@ -242,10 +302,10 @@ SIZE TaskbarWindow::DrawContent(HDC dc, const Metrics& m) {
     }
 
     // 准备四段文本
-    std::wstring up_text   = cfg_.up_str   + FormatSpeed(m.net_up_bps,
+    std::wstring up_text   = cfg_.up_str   + FormatSpeed(m.net_up_bytes_per_sec,
                                                          cfg_.short_speed_unit,
                                                          cfg_.separate_unit_space);
-    std::wstring down_text = cfg_.down_str + FormatSpeed(m.net_down_bps,
+    std::wstring down_text = cfg_.down_str + FormatSpeed(m.net_down_bytes_per_sec,
                                                          cfg_.short_speed_unit,
                                                          cfg_.separate_unit_space);
     std::wstring cpu_text  = cfg_.cpu_str  + FormatPercent(m.cpu_usage,    cfg_.hide_percent);

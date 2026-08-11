@@ -38,12 +38,14 @@ bool App::Init(HINSTANCE hinst, int cmd_show) {
     // 1. 配置
     cfg_mgr_.Init();
     cfg_ = cfg_mgr_.Load();
+    monitor_.SetNetworkSelection(cfg_.network_interface);
 
     // 2. 调度窗口（必须先建，定时器和托盘回调都挂它）
     if (!CreateHiddenWindow()) return false;
 
     // 3. 任务栏窗口
     if (!taskbar_wnd_.Create(hinst, cfg_)) return false;
+    taskbar_wnd_.UpdateFullscreenVisibility();
     // 透明显示层本身仍然鼠标穿透；低级回调只负责抑制监控区域的右键，
     // 避免同一个右键继续落到 Explorer 的任务栏菜单。
     taskbar_wnd_.SetContextMenuTarget(hidden_hwnd_);
@@ -109,6 +111,7 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Explorer 重启 → 任务栏窗口可能失效，重建之
             self->taskbar_wnd_.Destroy();
             if (self->taskbar_wnd_.Create(self->inst_, self->cfg_)) {
+                self->taskbar_wnd_.UpdateFullscreenVisibility();
                 self->taskbar_wnd_.SetContextMenuTarget(self->hidden_hwnd_);
                 self->taskbar_wnd_.SetInputFallbackEnabled(
                     !self->raw_mouse_registered_ &&
@@ -145,7 +148,11 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 EndMenu();
                 return 0;
             case WM_COMMAND:
-                self->HandleCommand(static_cast<UINT>(LOWORD(wp)));
+                {
+                    const std::vector<NetworkInterfaceInfo> no_interfaces;
+                    self->HandleCommand(static_cast<UINT>(LOWORD(wp)),
+                                        no_interfaces);
+                }
                 return 0;
             case WM_TRAYICON:
                 self->HandleTrayCallback(wp, lp);
@@ -285,7 +292,9 @@ LRESULT CALLBACK App::LowLevelMouseProc(int code, WPARAM wp, LPARAM lp) {
 
 // ---------- 业务 ----------
 void App::DoSample() {
-    // 采样 + 刷新任务栏窗口
+    // 先处理前台全屏状态，再采样 + 刷新任务栏窗口。
+    // UpdateFullscreenVisibility 的判断很轻，不需要额外高频定时器。
+    taskbar_wnd_.UpdateFullscreenVisibility();
     taskbar_wnd_.Refresh(monitor_);
     UpdateTrayTip();
 }
@@ -311,10 +320,21 @@ void App::HandleTrayCallback(WPARAM /*wp*/, LPARAM lp) {
     }
 }
 
-void App::HandleCommand(UINT cmd) {
+void App::HandleCommand(UINT cmd,
+                        const std::vector<NetworkInterfaceInfo>& interfaces) {
+    if (cmd >= IDM_NETWORK_INTERFACE_BASE) {
+        const size_t index = static_cast<size_t>(cmd - IDM_NETWORK_INTERFACE_BASE);
+        if (index < interfaces.size() && index < 100) {
+            SetNetworkSelection(interfaces[index].id);
+            return;
+        }
+    }
+
     switch (cmd) {
         case IDM_RUN_STARTUP:  ToggleStartup(); break;
         case IDM_TOGGLE_TRAY:  ToggleTrayIcon(); break;
+        case IDM_NETWORK_AUTO: SetNetworkSelection(kNetworkSelectionAuto); break;
+        case IDM_NETWORK_ALL:  SetNetworkSelection(kNetworkSelectionAll); break;
         case IDM_OPEN_TASKMGR: OpenTaskManager(); break;
         case IDM_ABOUT:        ShowAbout(); break;
         case IDM_EXIT:         Exit(); break;
@@ -322,9 +342,11 @@ void App::HandleCommand(UINT cmd) {
 }
 
 void App::ShowContextMenu(POINT pt) {
+    const auto interfaces = monitor_.EnumerateNetworkInterfaces();
     UINT cmd = tray_.PopupMenu(hidden_hwnd_, pt, cfg_.run_on_startup,
-                               cfg_.show_tray_icon);
-    if (cmd != 0) HandleCommand(cmd);
+                               cfg_.show_tray_icon, cfg_.network_interface,
+                               interfaces);
+    if (cmd != 0) HandleCommand(cmd, interfaces);
 }
 
 void App::ToggleStartup() {
@@ -342,6 +364,16 @@ void App::ToggleTrayIcon() {
         tray_.Remove();
     }
     cfg_mgr_.Save(cfg_);
+}
+
+void App::SetNetworkSelection(const std::wstring& selection) {
+    cfg_.network_interface = selection.empty()
+        ? std::wstring(kNetworkSelectionAuto) : selection;
+    monitor_.SetNetworkSelection(cfg_.network_interface);
+    cfg_mgr_.Save(cfg_);
+    // 立即刷新，让用户切换后不用等下一次定时器。
+    taskbar_wnd_.Refresh(monitor_);
+    UpdateTrayTip();
 }
 
 void App::OpenTaskManager() {
@@ -421,8 +453,8 @@ void App::UpdateTrayTip() {
 
     std::wostringstream oss;
     oss << L"MiniMonitor\n"
-        << L"↑ " << FormatSpeed(m.net_up_bps, true)
-        << L"  ↓ " << FormatSpeed(m.net_down_bps, true)
+        << L"↑ " << FormatSpeed(m.net_up_bytes_per_sec, true)
+        << L"  ↓ " << FormatSpeed(m.net_down_bytes_per_sec, true)
         << L"\nCPU " << m.cpu_usage << L"%"
         << L"  内存 " << m.memory_usage << L"%";
     tray_.SetTip(oss.str().c_str());

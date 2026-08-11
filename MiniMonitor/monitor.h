@@ -3,14 +3,24 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <vector>
 
 namespace mm {
+
+inline constexpr wchar_t kNetworkSelectionAuto[] = L"auto";
+inline constexpr wchar_t kNetworkSelectionAll[] = L"all";
+
+struct NetworkInterfaceInfo {
+    std::wstring id;
+    std::wstring display_name;
+    bool hardware = false;
+};
 
 // 一次采样得到的原始指标快照。
 struct Metrics {
     // 网络速率（字节/秒），由两次采样差值计算
-    ULONGLONG net_up_bps = 0;     // 上行
-    ULONGLONG net_down_bps = 0;   // 下行
+    ULONGLONG net_up_bytes_per_sec = 0;     // 上行，字节/秒
+    ULONGLONG net_down_bytes_per_sec = 0;   // 下行，字节/秒
     // CPU 占用百分比（0~100），整数
     int cpu_usage = 0;
     // 内存占用百分比（0~100）
@@ -36,10 +46,15 @@ public:
     // 采样本身耗时 <0.1ms，可在 UI 线程直接调用。
     Metrics Update();
 
+    // 切换流量统计来源；auto=按默认路由自动选择，all=全部非过滤接口，
+    // 其它值为 EnumerateNetworkInterfaces() 返回的具体接口 ID。
+    void SetNetworkSelection(const std::wstring& selection);
+    std::vector<NetworkInterfaceInfo> EnumerateNetworkInterfaces() const;
+
 private:
     // —— 网络采样 ——
-    // 累加所有活动网卡（排除 loopback）的 InOctets/OutOctets。
-    // 用 GetIfTable2 + FreeMibTable（比 GetIfTable 更准、含 64 位计数）。
+    // 按当前选择累加接口的 InOctets/OutOctets。
+    // 用 GetIfTable2 + FreeMibTable（含 64 位计数）。
     bool SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out);
 
     // —— CPU 采样 ——
@@ -60,6 +75,17 @@ private:
     ULONGLONG last_sample_tick_ = 0;
 
     // 网络基线
+    std::wstring network_selection_ = kNetworkSelectionAuto;
+    struct NetworkCounter {
+        ULONGLONG luid = 0;
+        ULONGLONG in_octets = 0;
+        ULONGLONG out_octets = 0;
+    };
+    std::vector<NetworkCounter> previous_network_counters_;
+    ULONGLONG auto_active_luid_ = 0;
+    ULONGLONG auto_pending_luid_ = 0;
+    int auto_pending_samples_ = 0;
+    bool network_source_changed_ = false;
     ULONGLONG prev_in_ = 0;
     ULONGLONG prev_out_ = 0;
     // CPU 基线

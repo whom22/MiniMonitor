@@ -2,6 +2,7 @@
 #pragma once
 #include <windows.h>
 #include <shellapi.h>
+#include "monitor.h"
 
 namespace mm {
 
@@ -12,6 +13,9 @@ enum : UINT {
     IDM_ABOUT       = 2004,
     IDM_EXIT        = 2005,
     IDM_TOGGLE_TRAY = 2006,
+    IDM_NETWORK_AUTO = 2007,
+    IDM_NETWORK_ALL  = 2008,
+    IDM_NETWORK_INTERFACE_BASE = 2200,
 };
 
 // 自定义消息：托盘图标回调
@@ -31,7 +35,8 @@ public:
 
     // 在指定屏幕坐标弹出设置菜单，返回被点选的命令 ID（0 表示没选）。
     UINT PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
-                   bool show_tray_icon);
+                   bool show_tray_icon, const std::wstring& network_selection,
+                   const std::vector<NetworkInterfaceInfo>& interfaces);
 
     // 菜单打开期间由 Raw Input 观察器调用；只结束菜单，不吞掉外部鼠标消息。
     void CancelMenu();
