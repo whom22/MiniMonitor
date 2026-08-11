@@ -19,6 +19,7 @@
 - ✅ 单实例运行（多开自动退出）
 - ✅ 单 exe 文件，无第三方运行时 DLL 依赖（Windows 系统 DLL 除外）
 - ✅ 分辨率/DPI 变化自动重新定位
+- ✅ 前台窗口进入真正全屏时自动隐藏，退出全屏后恢复
 
 ## 占用（本机 Release 实测）
 
@@ -160,7 +161,7 @@ MiniMonitor/
 ## 实现要点（为什么这样设计能"占用最小"）
 
 ### 1. 数据采集 —— 纯系统 API，零依赖
-- **网络流量**：`GetIfTable2`（IP Helper API）枚举网卡，累加所有活动网卡的 `InOctets/OutOctets`，两次采样差分得速率。**不依赖任何第三方库**（TrafficMonitor 也是这个做法）。
+- **网络流量**：`GetIfTable2`（IP Helper API）只累加活动硬件接口的 `InOctets/OutOctets`，过滤 Hyper-V/VPN/过滤器等虚拟接口，避免同一物理流量重复计数；两次采样差分得到字节/秒速率。**不依赖任何第三方库**（TrafficMonitor 也是这个做法）。
 - **CPU**：`GetSystemTimes` 拿 idle/kernel/user 三个时间，差分算占用率。比性能计数器轻得多。
 - **内存**：`GlobalMemoryStatusEx` 的 `dwMemoryLoad` 直接给百分比。
 

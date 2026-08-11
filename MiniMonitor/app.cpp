@@ -44,6 +44,7 @@ bool App::Init(HINSTANCE hinst, int cmd_show) {
 
     // 3. 任务栏窗口
     if (!taskbar_wnd_.Create(hinst, cfg_)) return false;
+    taskbar_wnd_.UpdateFullscreenVisibility();
     // 透明显示层本身仍然鼠标穿透；低级回调只负责抑制监控区域的右键，
     // 避免同一个右键继续落到 Explorer 的任务栏菜单。
     taskbar_wnd_.SetContextMenuTarget(hidden_hwnd_);
@@ -109,6 +110,7 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // Explorer 重启 → 任务栏窗口可能失效，重建之
             self->taskbar_wnd_.Destroy();
             if (self->taskbar_wnd_.Create(self->inst_, self->cfg_)) {
+                self->taskbar_wnd_.UpdateFullscreenVisibility();
                 self->taskbar_wnd_.SetContextMenuTarget(self->hidden_hwnd_);
                 self->taskbar_wnd_.SetInputFallbackEnabled(
                     !self->raw_mouse_registered_ &&
@@ -285,7 +287,9 @@ LRESULT CALLBACK App::LowLevelMouseProc(int code, WPARAM wp, LPARAM lp) {
 
 // ---------- 业务 ----------
 void App::DoSample() {
-    // 采样 + 刷新任务栏窗口
+    // 先处理前台全屏状态，再采样 + 刷新任务栏窗口。
+    // UpdateFullscreenVisibility 的判断很轻，不需要额外高频定时器。
+    taskbar_wnd_.UpdateFullscreenVisibility();
     taskbar_wnd_.Refresh(monitor_);
     UpdateTrayTip();
 }
@@ -421,8 +425,8 @@ void App::UpdateTrayTip() {
 
     std::wostringstream oss;
     oss << L"MiniMonitor\n"
-        << L"↑ " << FormatSpeed(m.net_up_bps, true)
-        << L"  ↓ " << FormatSpeed(m.net_down_bps, true)
+        << L"↑ " << FormatSpeed(m.net_up_bytes_per_sec, true)
+        << L"  ↓ " << FormatSpeed(m.net_down_bytes_per_sec, true)
         << L"\nCPU " << m.cpu_usage << L"%"
         << L"  内存 " << m.memory_usage << L"%";
     tray_.SetTip(oss.str().c_str());

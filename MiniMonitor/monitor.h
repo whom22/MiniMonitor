@@ -9,8 +9,8 @@ namespace mm {
 // 一次采样得到的原始指标快照。
 struct Metrics {
     // 网络速率（字节/秒），由两次采样差值计算
-    ULONGLONG net_up_bps = 0;     // 上行
-    ULONGLONG net_down_bps = 0;   // 下行
+    ULONGLONG net_up_bytes_per_sec = 0;     // 上行，字节/秒
+    ULONGLONG net_down_bytes_per_sec = 0;   // 下行，字节/秒
     // CPU 占用百分比（0~100），整数
     int cpu_usage = 0;
     // 内存占用百分比（0~100）
@@ -38,8 +38,8 @@ public:
 
 private:
     // —— 网络采样 ——
-    // 累加所有活动网卡（排除 loopback）的 InOctets/OutOctets。
-    // 用 GetIfTable2 + FreeMibTable（比 GetIfTable 更准、含 64 位计数）。
+    // 累加所有活动物理网卡（排除 loopback/tunnel/虚拟过滤接口）的
+    // InOctets/OutOctets。用 GetIfTable2 + FreeMibTable（含 64 位计数）。
     bool SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out);
 
     // —— CPU 采样 ——

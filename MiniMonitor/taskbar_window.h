@@ -35,6 +35,10 @@ public:
     // 重新定位（分辨率/任务栏变化、配置改动时调用）。
     void Reposition();
 
+    // 前台窗口进入独占/无边框全屏时隐藏覆盖层；退出全屏后恢复显示。
+    // 仅检查覆盖层所在显示器，不影响其它显示器上的普通窗口。
+    void UpdateFullscreenVisibility();
+
     // 应用新配置（颜色/字体/标签等变化时）。
     void ApplyConfig(const Config& cfg);
 
@@ -81,6 +85,9 @@ private:
     // 读取 Win11 深浅色主题（注册表），返回 true=深色
     bool IsDarkTheme();
 
+    // 判断覆盖层所在显示器是否有真正覆盖整个显示器的前台窗口。
+    bool IsFullscreenForeground() const;
+
     HINSTANCE   inst_     = nullptr;
     HWND        hwnd_     = nullptr;
     HWND        context_menu_target_ = nullptr;
@@ -88,6 +95,7 @@ private:
     Config      cfg_;
     HFONT       font_     = nullptr;
     Monitor*    monitor_  = nullptr;   // 不持有，仅 Refresh 时借用
+    bool        fullscreen_hidden_ = false;
 
     // 上一次绘制的指标缓存（OnPaint 时复用，避免重复采样）
     Metrics     last_metrics_;

@@ -20,6 +20,22 @@
 
 namespace mm {
 
+// MIB_IF_ROW2::InOctets/OutOctets 的单位是 octet，即 byte，不是 bit。
+// 这里单独封装差分换算，避免后续改动把网络链路速率（bit/s）混入流量值。
+static ULONGLONG BytesPerSecond(ULONGLONG delta_bytes,
+                                ULONGLONG elapsed_ms) {
+    if (elapsed_ms == 0) return 0;
+    const ULONGLONG max_value = (std::numeric_limits<ULONGLONG>::max)();
+    const ULONGLONG whole = delta_bytes / elapsed_ms;
+    const ULONGLONG remainder = delta_bytes % elapsed_ms;
+    if (whole > max_value / 1000) return max_value;
+    const ULONGLONG scaled_remainder =
+        (remainder * 1000) / elapsed_ms;
+    return whole * 1000 > max_value - scaled_remainder
+        ? max_value
+        : whole * 1000 + scaled_remainder;
+}
+
 // 将 FILETIME（两段 32 位）转换为单个 64 位 tick 数。
 // GetSystemTimes 返回的是 100ns 间隔的计数，但我们只用差分比值，
 // 不需要换算成秒，直接当整数处理即可。
@@ -48,6 +64,11 @@ bool Monitor::SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out) {
         if (row.Type == IF_TYPE_TUNNEL) continue;
         // OperStatus: 仅统计 Up 的网卡，避免把断开的虚拟网卡计入。
         if (row.OperStatus != IfOperStatusUp) continue;
+
+        // GetIfTable2 还会返回 Hyper-V/VPN/过滤器等虚拟接口；同一份
+        // 物理流量可能在这些接口上重复出现。只保留硬件接口，避免速率
+        // 被重复累计（这也是显示值明显偏大的常见来源）。
+        if (!row.InterfaceAndOperStatusFlags.HardwareInterface) continue;
 
         // InOctets = 下行（接收），OutOctets = 上行（发送）。
         // 64 位计数，不易溢出。
@@ -97,7 +118,8 @@ Metrics Monitor::Update() {
     // —— 网络 ——
     ULONGLONG cur_in = 0, cur_out = 0;
     ULONGLONG delta_in = 0, delta_out = 0;
-    bool have_network_delta = false;
+    bool have_in_delta = false;
+    bool have_out_delta = false;
     const bool network_ok = SampleNetwork(cur_in, cur_out);
     if (!network_ok) {
         has_network_baseline_ = false;
@@ -105,35 +127,30 @@ Metrics Monitor::Update() {
         // 差分。注意计数器可能在系统睡眠/网卡重置后回绕或变小，做保护。
         if (has_network_baseline_ && cur_in >= prev_in_) {
             delta_in = cur_in - prev_in_;
-            have_network_delta = true;
-        }
-        if (have_network_delta && elapsed_ms > 0) {
-            const ULONGLONG whole = delta_in / elapsed_ms;
-            const ULONGLONG rem = delta_in % elapsed_ms;
-            m.net_down_bps = whole > (std::numeric_limits<ULONGLONG>::max)() / 1000
-                ? (std::numeric_limits<ULONGLONG>::max)()
-                : whole * 1000 + (rem * 1000) / elapsed_ms;
+            have_in_delta = true;
+            m.net_down_bytes_per_sec = BytesPerSecond(delta_in, elapsed_ms);
         }
         if (has_network_baseline_ && cur_out >= prev_out_) {
             delta_out = cur_out - prev_out_;
-            have_network_delta = true;
-        }
-        if (has_network_baseline_ && cur_out >= prev_out_ && elapsed_ms > 0) {
-            const ULONGLONG whole = delta_out / elapsed_ms;
-            const ULONGLONG rem = delta_out % elapsed_ms;
-            m.net_up_bps = whole > (std::numeric_limits<ULONGLONG>::max)() / 1000
-                ? (std::numeric_limits<ULONGLONG>::max)()
-                : whole * 1000 + (rem * 1000) / elapsed_ms;
+            have_out_delta = true;
+            m.net_up_bytes_per_sec = BytesPerSecond(delta_out, elapsed_ms);
         }
         prev_in_ = cur_in;
         prev_out_ = cur_out;
         has_network_baseline_ = true;
     }
     // 累计流量：把本秒增量加进来（首次也记）
-    if (network_ok && has_network_baseline_ && have_network_delta) {
+    if (network_ok && has_network_baseline_ &&
+        (have_in_delta || have_out_delta)) {
         const ULONGLONG max_value = (std::numeric_limits<ULONGLONG>::max)();
-        acc_down_ = delta_in > max_value - acc_down_ ? max_value : acc_down_ + delta_in;
-        acc_up_   = delta_out > max_value - acc_up_ ? max_value : acc_up_ + delta_out;
+        if (have_in_delta) {
+            acc_down_ = delta_in > max_value - acc_down_
+                ? max_value : acc_down_ + delta_in;
+        }
+        if (have_out_delta) {
+            acc_up_ = delta_out > max_value - acc_up_
+                ? max_value : acc_up_ + delta_out;
+        }
     }
     m.total_down = acc_down_;
     m.total_up   = acc_up_;
@@ -175,9 +192,10 @@ Metrics Monitor::Update() {
 
 // 单位换算：B/s → KB/s → MB/s → GB/s
 // 阈值用 1024（二进制），符合 Windows 资源管理器的习惯。
-std::wstring FormatSpeed(ULONGLONG bps, bool short_mode, bool separate_unit_space) {
+std::wstring FormatSpeed(ULONGLONG bytes_per_sec, bool short_mode,
+                         bool separate_unit_space) {
     const wchar_t* units[] = { L"B/s", L"KB/s", L"MB/s", L"GB/s", L"TB/s" };
-    double v = static_cast<double>(bps);
+    double v = static_cast<double>(bytes_per_sec);
     int u = 0;
     while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
 
