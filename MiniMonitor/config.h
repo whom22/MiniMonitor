@@ -33,6 +33,10 @@ struct Config {
     bool separate_unit_space = true;  // 数值与单位间留空格
     int  item_space        = 28;      // 两列之间的间距（像素），让布局更舒展
 
+    // 网络流量来源：auto=自动统计物理网卡，all=全部非过滤接口，
+    // 也可以保存具体网卡的 Interface LUID。
+    std::wstring network_interface = L"auto";
+
     // —— 任务栏定位 ——
     // 找不到 Explorer 托盘容器时的回退留白（像素）；正常情况下会以
     // TrayNotifyWnd 的实际左边界为硬上限，防止覆盖系统图标。

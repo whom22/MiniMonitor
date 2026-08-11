@@ -15,7 +15,7 @@
 - ✅ 任务栏实时显示：`↑: 1.23 MB/s   ↓: 4.56 MB/s   CPU: 12%   内存: 45%`
 - ✅ Win11 深色/浅色主题自动适配
 - ✅ 单位智能转换（B/s → KB/s → MB/s → GB/s）
-- ✅ 系统托盘图标 + 右键菜单（显示/隐藏、开机自启、任务管理器、关于、退出）
+- ✅ 监控区域/托盘右键菜单（流量网卡切换、托盘图标、开机自启、任务管理器、关于、退出）
 - ✅ 单实例运行（多开自动退出）
 - ✅ 单 exe 文件，无第三方运行时 DLL 依赖（Windows 系统 DLL 除外）
 - ✅ 分辨率/DPI 变化自动重新定位
@@ -90,7 +90,8 @@ msbuild MiniMonitor.sln /p:Configuration=Release /p:Platform=x64
 
 直接双击 `MiniMonitor.exe` 运行。首次正常退出时会在 exe 同目录生成 `MiniMonitor.ini` 配置文件（绿色便携）。
 
-- **监控区域/托盘右键**：开机自启、托盘图标开关、打开任务管理器、关于、退出
+- **监控区域/托盘右键**：流量网卡切换、开机自启、托盘图标开关、打开任务管理器、关于、退出
+- **流量网卡**：默认“自动（物理网卡）”；开启 VPN 后可在“流量网卡”子菜单选择具体 VPN/虚拟网卡，或选择全部非过滤接口（可能重复计数）
 - 监控文字始终显示；不再提供容易误触的“隐藏窗口”功能
 - **鼠标悬停托盘图标**：显示当前数值
 
@@ -116,7 +117,10 @@ cpu_str = "CPU: "
 mem_str = "内存: "
 short_speed_unit = 0             ; 1=速率不显示单位（更窄）
 hide_percent = 0                 ; 1=百分比不显示 % 号
-item_space = 20                  ; 两列之间的间距（像素）
+item_space = 28                  ; 两列之间的间距（像素）
+
+[Network]
+interface = auto                 ; auto=物理网卡，all=全部非过滤接口（可能重复），也可填写具体接口 ID
 
 [Taskbar]
 taskbar_right_space = 180        ; 找不到托盘容器时的回退留白；正常情况自动读取实际托盘边界
@@ -161,7 +165,7 @@ MiniMonitor/
 ## 实现要点（为什么这样设计能"占用最小"）
 
 ### 1. 数据采集 —— 纯系统 API，零依赖
-- **网络流量**：`GetIfTable2`（IP Helper API）只累加活动硬件接口的 `InOctets/OutOctets`，过滤 Hyper-V/VPN/过滤器等虚拟接口，避免同一物理流量重复计数；两次采样差分得到字节/秒速率。**不依赖任何第三方库**（TrafficMonitor 也是这个做法）。
+- **网络流量**：`GetIfTable2`（IP Helper API）默认只累加活动硬件接口的 `InOctets/OutOctets`，过滤器接口始终排除；也可从右键菜单切换到具体 VPN/虚拟接口或全部非过滤接口（此模式可能包含重复计数）。两次采样差分得到字节/秒速率。**不依赖任何第三方库**。
 - **CPU**：`GetSystemTimes` 拿 idle/kernel/user 三个时间，差分算占用率。比性能计数器轻得多。
 - **内存**：`GlobalMemoryStatusEx` 的 `dwMemoryLoad` 直接给百分比。
 

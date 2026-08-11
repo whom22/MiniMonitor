@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <limits>
+#include <set>
 
 #if defined(_MSC_VER)
 #pragma comment(lib, "iphlpapi.lib")
@@ -43,6 +44,55 @@ static inline ULONGLONG FileTimeToU64(const FILETIME& ft) {
     return (static_cast<ULONGLONG>(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
 }
 
+void Monitor::SetNetworkSelection(const std::wstring& selection) {
+    const std::wstring normalized = selection.empty()
+        ? std::wstring(kNetworkSelectionAuto) : selection;
+    if (network_selection_ == normalized) return;
+
+    network_selection_ = normalized;
+    // 统计来源改变后，旧接口的计数不能参与新接口的差分，
+    // 否则第一次刷新可能显示一个虚假的超大速率。
+    has_network_baseline_ = false;
+    prev_in_ = 0;
+    prev_out_ = 0;
+    acc_up_ = 0;
+    acc_down_ = 0;
+}
+
+std::vector<NetworkInterfaceInfo> Monitor::EnumerateNetworkInterfaces() const {
+    std::vector<NetworkInterfaceInfo> result;
+    PMIB_IF_TABLE2 table = nullptr;
+    const auto status = GetIfTable2(&table);
+    if (status != NO_ERROR || table == nullptr) {
+        if (table) FreeMibTable(table);
+        return result;
+    }
+
+    std::set<std::wstring> seen;
+    for (ULONG i = 0; i < table->NumEntries; ++i) {
+        const MIB_IF_ROW2& row = table->Table[i];
+        if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        if (row.Type == IF_TYPE_TUNNEL) continue;
+        if (row.OperStatus != IfOperStatusUp) continue;
+        // 过滤器接口可能再次暴露同一份物理计数，不能作为独立来源。
+        if (row.InterfaceAndOperStatusFlags.FilterInterface) continue;
+
+        const std::wstring id = std::to_wstring(row.InterfaceLuid.Value);
+        if (!seen.insert(id).second) continue;
+
+        std::wstring name = row.Alias;
+        if (name.empty()) name = row.Description;
+        if (name.empty()) name = L"接口 " + id;
+        name += row.InterfaceAndOperStatusFlags.HardwareInterface
+            ? L"（物理）" : L"（VPN/虚拟）";
+
+        result.push_back({id, name,
+                          row.InterfaceAndOperStatusFlags.HardwareInterface != 0});
+    }
+    FreeMibTable(table);
+    return result;
+}
+
 bool Monitor::SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out) {
     out_total_in = 0;
     out_total_out = 0;
@@ -57,7 +107,7 @@ bool Monitor::SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out) {
 
     for (ULONG i = 0; i < table->NumEntries; ++i) {
         const MIB_IF_ROW2& row = table->Table[i];
-        // 跳过环回、断开、非物理网卡。IfType 取值见 ifmib.h：
+        // 跳过环回、断开和隧道接口。IfType 取值见 ifmib.h：
         //   IF_TYPE_SOFTWARE_LOOPBACK = 24
         //   IF_TYPE_TUNNEL            = 131
         if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;
@@ -65,10 +115,20 @@ bool Monitor::SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out) {
         // OperStatus: 仅统计 Up 的网卡，避免把断开的虚拟网卡计入。
         if (row.OperStatus != IfOperStatusUp) continue;
 
-        // GetIfTable2 还会返回 Hyper-V/VPN/过滤器等虚拟接口；同一份
-        // 物理流量可能在这些接口上重复出现。只保留硬件接口，避免速率
-        // 被重复累计（这也是显示值明显偏大的常见来源）。
-        if (!row.InterfaceAndOperStatusFlags.HardwareInterface) continue;
+        // 过滤器接口可能与下层接口暴露同一份计数，始终排除。
+        if (row.InterfaceAndOperStatusFlags.FilterInterface) continue;
+
+        bool include = false;
+        if (network_selection_ == kNetworkSelectionAuto) {
+            // 默认只统计物理接口，避免 VPN/Hyper-V 等虚拟接口重复计数。
+            include = row.InterfaceAndOperStatusFlags.HardwareInterface != 0;
+        } else if (network_selection_ == kNetworkSelectionAll) {
+            // 明确由用户选择时，允许把物理接口和 VPN/虚拟接口一起统计。
+            include = true;
+        } else {
+            include = std::to_wstring(row.InterfaceLuid.Value) == network_selection_;
+        }
+        if (!include) continue;
 
         // InOctets = 下行（接收），OutOctets = 上行（发送）。
         // 64 位计数，不易溢出。

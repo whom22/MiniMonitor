@@ -38,13 +38,15 @@ private:
     void HandleRawMouseInput(HRAWINPUT input);
     static LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wp, LPARAM lp);
     void HandleTrayCallback(WPARAM wp, LPARAM lp);
-    void HandleCommand(UINT cmd);
+    void HandleCommand(UINT cmd,
+                       const std::vector<NetworkInterfaceInfo>& interfaces);
     void ShowContextMenu(POINT pt);
 
     // —— 业务动作 ——
     void DoSample();              // 定时器触发：采样 + 刷新任务栏
     void ToggleStartup();         // 切换开机自启
     void ToggleTrayIcon();        // 切换是否显示托盘图标
+    void SetNetworkSelection(const std::wstring& selection);
     void OpenTaskManager();
     void ShowAbout();
     void Exit();

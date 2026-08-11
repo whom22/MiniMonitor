@@ -38,6 +38,7 @@ bool App::Init(HINSTANCE hinst, int cmd_show) {
     // 1. 配置
     cfg_mgr_.Init();
     cfg_ = cfg_mgr_.Load();
+    monitor_.SetNetworkSelection(cfg_.network_interface);
 
     // 2. 调度窗口（必须先建，定时器和托盘回调都挂它）
     if (!CreateHiddenWindow()) return false;
@@ -147,7 +148,11 @@ LRESULT CALLBACK App::HiddenWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 EndMenu();
                 return 0;
             case WM_COMMAND:
-                self->HandleCommand(static_cast<UINT>(LOWORD(wp)));
+                {
+                    const std::vector<NetworkInterfaceInfo> no_interfaces;
+                    self->HandleCommand(static_cast<UINT>(LOWORD(wp)),
+                                        no_interfaces);
+                }
                 return 0;
             case WM_TRAYICON:
                 self->HandleTrayCallback(wp, lp);
@@ -315,10 +320,21 @@ void App::HandleTrayCallback(WPARAM /*wp*/, LPARAM lp) {
     }
 }
 
-void App::HandleCommand(UINT cmd) {
+void App::HandleCommand(UINT cmd,
+                        const std::vector<NetworkInterfaceInfo>& interfaces) {
+    if (cmd >= IDM_NETWORK_INTERFACE_BASE) {
+        const size_t index = static_cast<size_t>(cmd - IDM_NETWORK_INTERFACE_BASE);
+        if (index < interfaces.size() && index < 100) {
+            SetNetworkSelection(interfaces[index].id);
+            return;
+        }
+    }
+
     switch (cmd) {
         case IDM_RUN_STARTUP:  ToggleStartup(); break;
         case IDM_TOGGLE_TRAY:  ToggleTrayIcon(); break;
+        case IDM_NETWORK_AUTO: SetNetworkSelection(kNetworkSelectionAuto); break;
+        case IDM_NETWORK_ALL:  SetNetworkSelection(kNetworkSelectionAll); break;
         case IDM_OPEN_TASKMGR: OpenTaskManager(); break;
         case IDM_ABOUT:        ShowAbout(); break;
         case IDM_EXIT:         Exit(); break;
@@ -326,9 +342,11 @@ void App::HandleCommand(UINT cmd) {
 }
 
 void App::ShowContextMenu(POINT pt) {
+    const auto interfaces = monitor_.EnumerateNetworkInterfaces();
     UINT cmd = tray_.PopupMenu(hidden_hwnd_, pt, cfg_.run_on_startup,
-                               cfg_.show_tray_icon);
-    if (cmd != 0) HandleCommand(cmd);
+                               cfg_.show_tray_icon, cfg_.network_interface,
+                               interfaces);
+    if (cmd != 0) HandleCommand(cmd, interfaces);
 }
 
 void App::ToggleStartup() {
@@ -346,6 +364,16 @@ void App::ToggleTrayIcon() {
         tray_.Remove();
     }
     cfg_mgr_.Save(cfg_);
+}
+
+void App::SetNetworkSelection(const std::wstring& selection) {
+    cfg_.network_interface = selection.empty()
+        ? std::wstring(kNetworkSelectionAuto) : selection;
+    monitor_.SetNetworkSelection(cfg_.network_interface);
+    cfg_mgr_.Save(cfg_);
+    // 立即刷新，让用户切换后不用等下一次定时器。
+    taskbar_wnd_.Refresh(monitor_);
+    UpdateTrayTip();
 }
 
 void App::OpenTaskManager() {

@@ -39,7 +39,9 @@ void TrayIcon::SetTip(const wchar_t* tip) {
 }
 
 UINT TrayIcon::PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
-                         bool show_tray_icon) {
+                         bool show_tray_icon,
+                         const std::wstring& network_selection,
+                         const std::vector<NetworkInterfaceInfo>& interfaces) {
     // 创建一个临时弹出菜单。
     // 注意：托盘菜单不能用窗口主菜单方式，必须用 CreatePopupMenu + TrackPopupMenu。
     HMENU menu = CreatePopupMenu();
@@ -48,6 +50,35 @@ UINT TrayIcon::PopupMenu(HWND hwnd, POINT pt, bool run_on_startup,
                 IDM_RUN_STARTUP, L"开机自启\t");
     AppendMenuW(menu, MF_STRING | (show_tray_icon ? MF_CHECKED : MF_UNCHECKED),
                 IDM_TOGGLE_TRAY, L"显示托盘图标\t");
+
+    HMENU network_menu = CreatePopupMenu();
+    if (network_menu) {
+        AppendMenuW(network_menu,
+                    MF_STRING | (network_selection == kNetworkSelectionAuto
+                                     ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_NETWORK_AUTO, L"自动（物理网卡）");
+        AppendMenuW(network_menu,
+                    MF_STRING | (network_selection == kNetworkSelectionAll
+                                     ? MF_CHECKED : MF_UNCHECKED),
+                    IDM_NETWORK_ALL, L"全部非过滤接口（可能重复）");
+        AppendMenuW(network_menu, MF_SEPARATOR, 0, nullptr);
+
+        // 网卡数量通常很少；上限避免异常驱动暴露大量接口时菜单失控，
+        // 也保证动态命令 ID 始终落在安全的低位范围内。
+        const size_t max_items = 100;
+        const size_t count = interfaces.size() < max_items
+            ? interfaces.size() : max_items;
+        for (size_t i = 0; i < count; ++i) {
+            const UINT id = IDM_NETWORK_INTERFACE_BASE + static_cast<UINT>(i);
+            AppendMenuW(network_menu,
+                        MF_STRING | (network_selection == interfaces[i].id
+                                         ? MF_CHECKED : MF_UNCHECKED),
+                        id, interfaces[i].display_name.c_str());
+        }
+        AppendMenuW(menu, MF_POPUP,
+                    reinterpret_cast<UINT_PTR>(network_menu), L"流量网卡");
+    }
+
     AppendMenuW(menu, MF_STRING, IDM_OPEN_TASKMGR, L"任务管理器...\t");
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, IDM_ABOUT, L"关于 MiniMonitor\t");

@@ -3,8 +3,18 @@
 #pragma once
 #include <windows.h>
 #include <string>
+#include <vector>
 
 namespace mm {
+
+inline constexpr wchar_t kNetworkSelectionAuto[] = L"auto";
+inline constexpr wchar_t kNetworkSelectionAll[] = L"all";
+
+struct NetworkInterfaceInfo {
+    std::wstring id;
+    std::wstring display_name;
+    bool hardware = false;
+};
 
 // 一次采样得到的原始指标快照。
 struct Metrics {
@@ -36,10 +46,15 @@ public:
     // 采样本身耗时 <0.1ms，可在 UI 线程直接调用。
     Metrics Update();
 
+    // 切换流量统计来源；auto=物理网卡，all=全部非过滤接口，
+    // 其它值为 EnumerateNetworkInterfaces() 返回的具体接口 ID。
+    void SetNetworkSelection(const std::wstring& selection);
+    std::vector<NetworkInterfaceInfo> EnumerateNetworkInterfaces() const;
+
 private:
     // —— 网络采样 ——
-    // 累加所有活动物理网卡（排除 loopback/tunnel/虚拟过滤接口）的
-    // InOctets/OutOctets。用 GetIfTable2 + FreeMibTable（含 64 位计数）。
+    // 按当前选择累加接口的 InOctets/OutOctets。
+    // 用 GetIfTable2 + FreeMibTable（含 64 位计数）。
     bool SampleNetwork(ULONGLONG& out_total_in, ULONGLONG& out_total_out);
 
     // —— CPU 采样 ——
@@ -60,6 +75,7 @@ private:
     ULONGLONG last_sample_tick_ = 0;
 
     // 网络基线
+    std::wstring network_selection_ = kNetworkSelectionAuto;
     ULONGLONG prev_in_ = 0;
     ULONGLONG prev_out_ = 0;
     // CPU 基线
